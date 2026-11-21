@@ -73,6 +73,7 @@ private fun readLine(input: InputStream): String? {
 }
 
 private fun readExactly(input: InputStream, length: Long): ByteArray {
+    if (length < 0) throw IOException("malformed body length")
     if (length > MAX_BODY_BYTES) throw IOException("response too large")
     val buffer = ByteArray(length.toInt())
     var read = 0
@@ -192,9 +193,10 @@ internal class Po0Client(private val prepare: (Socket) -> Unit) {
     private fun open(): Connection {
         val raw = Socket()
         try {
+            // Setting an option creates the descriptor, which protect() needs.
+            raw.soTimeout = CHECK_TIMEOUT_MS
             prepare(raw)
             raw.connect(InetSocketAddress(PO0_API_HOST, 443), CONNECT_TIMEOUT_MS)
-            raw.soTimeout = CHECK_TIMEOUT_MS
             val ssl = sslContext.socketFactory.createSocket(raw, PO0_API_HOST, 443, true) as SSLSocket
             ssl.startHandshake()
             if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(PO0_API_HOST, ssl.session)) {

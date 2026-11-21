@@ -2,6 +2,8 @@ package com.follow.clash.service.po0
 
 import java.io.ByteArrayInputStream
 import java.io.EOFException
+import java.io.IOException
+import java.net.InetAddress
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -56,6 +58,14 @@ class Po0HttpTest {
     fun `fails on a closed or cut connection`() {
         assertThrows(EOFException::class.java) { response("") }
         assertThrows(EOFException::class.java) { response("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc") }
+    }
+
+    @Test
+    fun `a negative length is a broken response`() {
+        assertThrows(IOException::class.java) { response("HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n") }
+        assertThrows(IOException::class.java) {
+            response("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n-1\r\n")
+        }
     }
 }
 
@@ -127,6 +137,15 @@ class Po0RulesTest {
         assertFalse(samePo0C24("1.2.4.0/24", "1.2.3.99"))
         assertFalse(samePo0C24(null, "1.2.3.99"))
         assertEquals("1.2.3.0/24", po0C24Of("1.2.3.4"))
+    }
+
+    @Test
+    fun `network keys keep IPv4 addresses and IPv6 slash 64s`() {
+        val addresses = listOf("10.0.0.2", "2001:db8:1:2::abcd", "2001:db8:1:2::1234", "fe80::1")
+        assertEquals(
+            listOf("10.0.0.2", "20010db800010002/64"),
+            po0AddressKeys(addresses.map(InetAddress::getByName)),
+        )
     }
 
     @Test

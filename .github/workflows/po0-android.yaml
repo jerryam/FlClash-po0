@@ -191,8 +191,13 @@ jobs:
           wrapper="$FLUTTER_ROOT/bin/cache/artifacts/gradle_wrapper"
           test -f gradlew || { test -d "$wrapper" || flutter precache; cp -R "$wrapper/." .; }
           chmod +x gradlew
+          # The platforms the build passed, in its order, so the core it bound is reused.
+          platforms=android-arm64
+          if [[ -n "$TAG" ]]; then
+            platforms=android-arm64,android-arm,android-x64
+          fi
           ./gradlew :service:testDebugUnitTest --tests 'com.follow.clash.service.po0.*' \
-            -Ptarget-platform=android-arm64 \
+            "-Ptarget-platform=$platforms" \
             -x :app:compileFlutterBuildDebug -x :app:copyFlutterAssetsDebug
 
       - name: Merge the release files
@@ -205,16 +210,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          upstream="$(gh release view "$TAG" -R chen08209/FlClash --json body -q .body || true)"
+          if ! changelog="$(awk '
+            /<!-- flclash:changelog:begin -->/ { p = "md" }
+            /^<!-- flclash:changelog:json/ { p = "json" }
+            p { print }
+            p == "md" && /<!-- flclash:changelog:end -->/ { p = "" }
+            p == "json" && /-->/ { p = "" }
+            END { exit p != "" }
+          ' <<< "$upstream")"; then
+            echo "::warning::An upstream changelog block does not close; the notes leave the changelog out"
+            changelog=''
+          fi
           {
             echo "FlClash $TAG，加上 po0 自动加白（工具 → po0 加白）。"
             echo
             echo '绝大多数手机装 `arm64` 的 APK。包名是 `com.follow.clash.po0`，可以和官方 FlClash 同时安装。'
-            upstream="$(gh release view "$TAG" -R chen08209/FlClash --json body -q .body || true)"
-            changelog="$(awk '
-              /<!-- flclash:changelog:begin -->/ || /^<!-- flclash:changelog:json/ { p = 1 }
-              p { print }
-              /<!-- flclash:changelog:end -->/ || (p && /^-->/) { p = 0 }
-            ' <<< "$upstream")"
             if [[ -n "$changelog" ]]; then
               echo
               echo "## 上游 FlClash $TAG 更新内容"
@@ -223,6 +234,17 @@ jobs:
             fi
           } > release-notes.md
           cat release-notes.md
+
+      - name: Remove the release the new APKs replace
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release delete "$TAG" --cleanup-tag --yes
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            git push --delete origin "refs/tags/$TAG"
+          fi
 
       - name: Release
         if: env.TAG != ''

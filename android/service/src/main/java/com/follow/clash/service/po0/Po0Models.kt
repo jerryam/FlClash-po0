@@ -4,6 +4,9 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.InetAddress
 
 /** The po0 firewall API answers on this address only, and whitelists the /24 the request comes from. */
 internal const val PO0_API_HOST = "124.221.69.228"
@@ -141,6 +144,20 @@ internal fun po0C24Of(ip: String): String {
     val parts = ip.removeSuffix("/24").split('.')
     return if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}.0/24" else ip
 }
+
+/**
+ * The part of a network's addresses that can move the exit: its IPv4
+ * addresses, and its global IPv6 /64s for networks that reach IPv4 through
+ * NAT64. Rotating IPv6 privacy addresses keep their /64, so they are ignored.
+ */
+internal fun po0AddressKeys(addresses: List<InetAddress>): List<String> = addresses.mapNotNull { address ->
+    when {
+        address is Inet4Address -> address.hostAddress
+        address is Inet6Address && !address.isLinkLocalAddress && !address.isLoopbackAddress ->
+            address.address.take(8).joinToString("") { "%02x".format(it) } + "/64"
+        else -> null
+    }
+}.distinct().sorted()
 
 /** The interval, or 2/4/8/16 times it after failures, at most 30 seconds unless the interval is longer. */
 internal fun po0NextDelayMs(intervalSeconds: Int, failures: Int): Long {

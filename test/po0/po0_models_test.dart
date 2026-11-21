@@ -112,12 +112,27 @@ void main() {
   });
 
   group('token lines', () {
-    test('format and parse keep tokens and notes', () {
+    test('format and parse keep tokens, notes and paused tokens', () {
       const entries = [
         Po0TokenEntry(token: _token, name: '东京 1 号'),
-        Po0TokenEntry(token: _other),
+        Po0TokenEntry(token: _other, name: '旧机器', enabled: false),
       ];
-      expect(parsePo0TokenLines(formatPo0TokenLines(entries)), entries);
+      final text = formatPo0TokenLines(entries);
+      expect(text, '$_token 东京 1 号\n# $_other 旧机器');
+      expect(parsePo0TokenLines(text), entries);
+    });
+
+    test('parse drops the link around a token', () {
+      expect(
+        parsePo0TokenLines(
+          'https://example.com/api/firewall/$_token/add?x=1 香港\n'
+          '#$_other',
+        ),
+        [
+          const Po0TokenEntry(token: _token, name: '香港'),
+          const Po0TokenEntry(token: _other, enabled: false),
+        ],
+      );
     });
 
     test('parse takes the rest of the line as the note', () {

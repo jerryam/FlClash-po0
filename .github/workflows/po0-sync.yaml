@@ -51,7 +51,9 @@ jobs:
             echo "::error::No stable upstream tag found"
             exit 1
           fi
-          released="$(git ls-remote --tags origin "refs/tags/$tag" | wc -l)"
+          # A tag left by a failed run, with no APKs on it, is not a release.
+          released="$(gh release view "$tag" --json assets \
+            -q '[.assets[].name | select(endswith(".apk"))] | length' 2>/dev/null || echo 0)"
           if git merge-base --is-ancestor "refs/upstream-tags/$tag" HEAD; then
             if [[ "$released" != 0 && "$REBUILD" != 'true' ]]; then
               echo "po0 already has $tag and its release"
@@ -68,11 +70,6 @@ jobs:
               exit 1
             fi
             git push origin HEAD:po0
-          fi
-          # A rebuild replaces the release, so its tag names the commit built.
-          if [[ "$released" != 0 ]]; then
-            gh release delete "$tag" --cleanup-tag --yes ||
-              git push --delete origin "refs/tags/$tag"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

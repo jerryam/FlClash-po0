@@ -16,7 +16,6 @@ import androidx.core.content.getSystemService
 import com.follow.clash.common.GlobalState
 import com.follow.clash.common.registerReceiverCompat
 import com.google.gson.JsonObject
-import java.net.Inet4Address
 import java.net.Socket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,7 +68,12 @@ object Po0Firewall {
     private var failures = 0
     private var pendingNetwork = false
     private var screenOffRetries = 0
-    private val networkAddresses = mutableMapOf<Network, List<String>>()
+    private var networkGeneration = 0
+    private var roundGeneration = 0
+    private var manualPending = false
+    private val networkStates = mutableMapOf<Network, NetworkState>()
+
+    private data class NetworkState(val validated: Boolean = false, val addresses: List<String> = emptyList())
 
     private val shouldRun: Boolean
         get() = (services.isNotEmpty() || uiCount > 0) && settings.activeTokens.isNotEmpty()
@@ -117,6 +121,7 @@ object Po0Firewall {
         synchronized(lock) {
             if (!shouldRun) return
             failures = 0
+            manualPending = true
             status.update { it.copy(busy = true) }
         }
         kick()
@@ -198,20 +203,32 @@ object Po0Firewall {
         .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         .build()
 
-    // Only a change of IPv4 addresses can move the exit's /24.
+    // The exit moves with a network's addresses, or when validation hands the default to another network.
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            val validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            updateNetwork(network) { it.copy(validated = validated) }
+        }
+
         override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-            val addresses = linkProperties.linkAddresses
-                .mapNotNull { (it.address as? Inet4Address)?.hostAddress }
-                .sorted()
-            val changed = synchronized(lock) { networkAddresses.put(network, addresses) != addresses }
-            if (changed) onNetworkChanged()
+            val addresses = po0AddressKeys(linkProperties.linkAddresses.map { it.address })
+            updateNetwork(network) { it.copy(addresses = addresses) }
         }
 
         override fun onLost(network: Network) {
-            val known = synchronized(lock) { networkAddresses.remove(network) != null }
+            val known = synchronized(lock) { networkStates.remove(network) != null }
             if (known) onNetworkChanged()
         }
+    }
+
+    private fun updateNetwork(network: Network, change: (NetworkState) -> NetworkState) {
+        val changed = synchronized(lock) {
+            val previous = networkStates[network]
+            val next = change(previous ?: NetworkState())
+            networkStates[network] = next
+            previous != next
+        }
+        if (changed) onNetworkChanged()
     }
 
     private fun onNetworkChanged() {
@@ -220,6 +237,7 @@ object Po0Firewall {
             failures = 0
             pendingNetwork = true
             screenOffRetries = 0
+            networkGeneration++
         }
         kick(NETWORK_DELAY_MS, debounce = true)
     }
@@ -256,6 +274,8 @@ object Po0Firewall {
     private suspend fun round() {
         val tokens = synchronized(lock) {
             dueAt = null
+            manualPending = false
+            roundGeneration = networkGeneration
             if (!shouldRun) {
                 status.update { it.copy(busy = false) }
                 return
@@ -305,7 +325,8 @@ object Po0Firewall {
 
     private fun finishLocked(failed: Boolean) {
         failures = if (failed) failures + 1 else 0
-        if (!failed) {
+        val roundSawCurrentNetwork = roundGeneration == networkGeneration
+        if (!failed && roundSawCurrentNetwork) {
             pendingNetwork = false
             screenOffRetries = 0
         }
@@ -314,7 +335,7 @@ object Po0Firewall {
             it.copy(
                 results = it.results.filterKeys(tokens::contains),
                 lastRound = System.currentTimeMillis(),
-                busy = false,
+                busy = manualPending,
             )
         }
         if (dueAt != null || !shouldRun) return

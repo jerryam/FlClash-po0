@@ -76,10 +76,15 @@ class Po0TokenEntry {
   int get hashCode => Object.hash(token, name, enabled);
 }
 
-/// One token per line, its note after it, as [parsePo0TokenLines] reads.
+/// One token per line, its note after it and `#` before a paused one, as
+/// [parsePo0TokenLines] reads.
 String formatPo0TokenLines(List<Po0TokenEntry> entries) => [
   for (final entry in entries)
-    entry.name.isEmpty ? entry.token : '${entry.token} ${entry.name}',
+    [
+      if (!entry.enabled) '#',
+      entry.token,
+      if (entry.name.isNotEmpty) entry.name,
+    ].join(' '),
 ].join('\n');
 
 /// The tokens in pasted text, each with the rest of its line as its note.
@@ -87,13 +92,40 @@ List<Po0TokenEntry> parsePo0TokenLines(String text) {
   final seen = <String>{};
   return [
     for (final line in text.split(RegExp(r'\r?\n')))
-      if (_po0TokenInText.firstMatch(line) case final match?
-          when seen.add(match.group(0)!))
-        Po0TokenEntry(
-          token: match.group(0)!,
-          name: line.replaceRange(match.start, match.end, ' ').trim(),
-        ),
+      if (_parsePo0TokenLine(line) case final entry? when seen.add(entry.token))
+        entry,
   ];
+}
+
+final _po0Word = RegExp(r'\S+');
+
+Po0TokenEntry? _parsePo0TokenLine(String line) {
+  var text = line.trim();
+  final paused = text.startsWith('#');
+  if (paused) {
+    text = text.substring(1);
+  }
+  final match = _po0TokenInText.firstMatch(text);
+  if (match == null) {
+    return null;
+  }
+  final word = _po0Word
+      .allMatches(text)
+      .firstWhere(
+        (candidate) =>
+            candidate.start <= match.start && candidate.end >= match.end,
+      );
+  final link = word.group(0)!.contains('/');
+  final note = text.replaceRange(
+    link ? word.start : match.start,
+    link ? word.end : match.end,
+    ' ',
+  );
+  return Po0TokenEntry(
+    token: match.group(0)!,
+    name: note.trim().replaceAll(RegExp(r'\s+'), ' '),
+    enabled: !paused,
+  );
 }
 
 class Po0Settings {

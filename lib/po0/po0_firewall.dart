@@ -54,6 +54,7 @@ class Po0Firewall {
 
   ProviderContainer? _container;
   Future<void> _updates = Future.value();
+  bool _loaded = false;
 
   void attach(ProviderContainer container) {
     if (!system.isAndroid || _container != null) {
@@ -73,10 +74,18 @@ class Po0Firewall {
   }
 
   /// Changes the settings one at a time, each saved by the service first.
+  /// None is saved before the saved ones are read, or defaults replace them.
   Future<void> update(Po0Settings Function(Po0Settings current) change) {
     return _updates = _updates.then((_) async {
       final container = _container;
       if (container == null) {
+        return;
+      }
+      if (!_loaded) {
+        await _load();
+      }
+      if (!_loaded) {
+        _log('没有读到已保存的设置，这次修改没有保存', LogLevel.warning);
         return;
       }
       try {
@@ -91,20 +100,44 @@ class Po0Firewall {
   Future<void> runNow() => _invoke('runNow');
 
   Future<void> _load() async {
+    final Po0Settings settings;
     try {
       final raw = await _methods.invokeMethod<String>('getSettings');
-      var settings = Po0Settings.fromJson(json.decode(raw ?? '{}'));
-      final preferences = await SharedPreferences.getInstance();
-      final legacy = preferences.getString(_legacyKey);
-      if (legacy != null) {
-        if (settings.tokens.isEmpty) {
-          settings = await _save(Po0Settings.fromJson(json.decode(legacy)));
-        }
-        await preferences.remove(_legacyKey);
-      }
-      _replace(settings);
+      settings = Po0Settings.fromJson(json.decode(raw ?? '{}'));
     } catch (error) {
       _log('读取设置失败：$error', LogLevel.warning);
+      return;
+    }
+    _replace(settings);
+    _loaded = true;
+    try {
+      await _migrateLegacy(settings);
+    } catch (error) {
+      _log('迁移旧设置失败：$error', LogLevel.warning);
+    }
+  }
+
+  /// A key that does not decode is dropped too, or it would fail every launch.
+  Future<void> _migrateLegacy(Po0Settings current) async {
+    final preferences = await SharedPreferences.getInstance();
+    final legacy = preferences.getString(_legacyKey);
+    if (legacy == null) {
+      return;
+    }
+    if (current.tokens.isEmpty) {
+      final decoded = _tryDecode(legacy);
+      if (decoded != null) {
+        _replace(await _save(Po0Settings.fromJson(decoded)));
+      }
+    }
+    await preferences.remove(_legacyKey);
+  }
+
+  Object? _tryDecode(String text) {
+    try {
+      return json.decode(text);
+    } on FormatException {
+      return null;
     }
   }
 

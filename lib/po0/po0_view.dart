@@ -190,7 +190,7 @@ Future<void> _exportTokens(List<Po0TokenEntry> entries) async {
     title: '复制全部 token',
     message: TextSpan(
       text:
-          '已复制 ${entries.length} 个 token 和备注。'
+          '已复制 ${entries.length} 个 token 和备注，停用的前面带 #。'
           '找个安全的地方保存，换机或重装后用「从剪贴板导入」恢复。',
     ),
   );
@@ -283,7 +283,8 @@ class Po0View extends ConsumerWidget {
       ],
       footer:
           '检查只读白名单，不占用名额；当前出口不在名单里时才写入。'
-          '代理运行时由后台服务检查，从最近任务里划掉应用也不停；'
+          '代理运行时由后台服务检查，从最近任务里划掉应用也不停，'
+          '但有些系统会清理后台，需要在电池设置里允许 FlClash 后台运行。'
           '亮屏时按间隔检查，熄屏后只在网络切换时检查。',
     );
   }
@@ -326,7 +327,7 @@ class Po0View extends ConsumerWidget {
         ListItem(
           leading: const GlyphIcon(AppGlyphs.paste),
           title: const Text('从剪贴板导入'),
-          subtitle: const Text('每行一个 token，后面可以跟备注'),
+          subtitle: const Text('每行一个 token，后面可以跟备注，# 开头的导入后是停用的'),
           onTap: () => unawaited(_importTokens(settings.tokens)),
         ),
         ListItem(
