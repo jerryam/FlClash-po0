@@ -126,10 +126,7 @@ Future<void> _replaceToken(
     (settings) => settings.copyWith(
       tokens: [
         for (final entry in settings.tokens)
-          if (entry.token != token)
-            entry
-          else if (change(entry) case final changed?)
-            changed,
+          if (entry.token != token) entry else ?change(entry),
       ],
     ),
   );

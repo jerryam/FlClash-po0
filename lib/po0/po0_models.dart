@@ -247,8 +247,7 @@ class Po0Status {
       results: {
         if (results is Map)
           for (final MapEntry(:key, :value) in results.entries)
-            if (key is String)
-              if (Po0Result.fromJson(value) case final result?) key: result,
+            if (key is String) key: ?Po0Result.fromJson(value),
       },
       lastRound: lastRound is num
           ? DateTime.fromMillisecondsSinceEpoch(lastRound.toInt())

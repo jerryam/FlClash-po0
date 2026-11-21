@@ -150,7 +150,10 @@ void main() {
         },
       });
       expect(status.busy, isTrue);
-      expect(status.lastRound, DateTime.fromMillisecondsSinceEpoch(1700000000000));
+      expect(
+        status.lastRound,
+        DateTime.fromMillisecondsSinceEpoch(1700000000000),
+      );
       expect(status.results.keys, [_token]);
       final result = status.results[_token]!;
       expect(result.type, Po0ResultType.notApplied);
