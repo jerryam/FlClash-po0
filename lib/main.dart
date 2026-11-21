@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/pages/error.dart';
+import 'package:fl_clash/po0/po0_firewall.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:rust_api/rust_api.dart';
@@ -35,10 +36,12 @@ void main() {
       try {
         await RustLib.init();
         final version = await system.init();
+        await po0Firewall.load();
         final container = await bootstrap.init(version);
         await FlClashHttpOverrides.trustCoreRoots();
         HttpOverrides.global = FlClashHttpOverrides(container);
         request.attach(container.read);
+        po0Firewall.attach(container);
         runApp(
           UncontrolledProviderScope(
             container: container,
