@@ -199,9 +199,7 @@ class Po0View extends ConsumerWidget {
           value: settings.enabled,
           onChanged: (value) {
             unawaited(
-              po0Firewall.update(
-                (current) => current.copyWith(enabled: value),
-              ),
+              po0Firewall.update((current) => current.copyWith(enabled: value)),
             );
           },
         ),

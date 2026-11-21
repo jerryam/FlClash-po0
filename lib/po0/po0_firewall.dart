@@ -434,9 +434,7 @@ class Po0Firewall {
         previous?.currentIp != result.currentIp) {
       _log(
         '${entry.label}：${po0ResultText(result)}',
-        result.type == Po0ResultType.error
-            ? LogLevel.warning
-            : LogLevel.info,
+        result.type == Po0ResultType.error ? LogLevel.warning : LogLevel.info,
       );
     }
   }
