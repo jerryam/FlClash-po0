@@ -1,0 +1,91 @@
+# Merges the latest stable FlClash release into po0 and publishes a po0
+# release of it. A merge conflict opens an issue and changes nothing.
+name: po0 sync upstream
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: 'Release the current upstream version again even if already merged'
+        type: boolean
+        default: false
+
+concurrency:
+  group: po0-sync
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.merge.outputs.tag }}
+      ref: ${{ steps.merge.outputs.ref }}
+    steps:
+      - name: Checkout po0
+        uses: actions/checkout@v4
+        with:
+          ref: po0
+          fetch-depth: 0
+
+      - name: Merge the latest upstream release
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REBUILD: ${{ inputs.rebuild || false }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # Upstream tags go to their own namespace: this repository's vX.Y.Z
+          # tags name the po0 releases, not upstream's commits.
+          git fetch --no-tags https://github.com/chen08209/FlClash.git \
+            '+refs/tags/*:refs/upstream-tags/*'
+          tag="$(git for-each-ref --format='%(refname:strip=2)' refs/upstream-tags \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
+          if [[ -z "$tag" ]]; then
+            echo "::error::No stable upstream tag found"
+            exit 1
+          fi
+          released="$(git ls-remote --tags origin "refs/tags/$tag" | wc -l)"
+          if git merge-base --is-ancestor "refs/upstream-tags/$tag" HEAD; then
+            if [[ "$released" != 0 && "$REBUILD" != 'true' ]]; then
+              echo "po0 already has $tag and its release"
+              exit 0
+            fi
+          else
+            if ! git merge --no-ff --no-edit \
+              -m "chore: merge upstream FlClash $tag" "refs/upstream-tags/$tag"; then
+              conflicts="$(git diff --name-only --diff-filter=U)"
+              git merge --abort
+              title="po0: merging upstream FlClash $tag has conflicts"
+              if ! gh issue list --state open --search "$title in:title" --json number --jq '.[].number' | grep -q .; then
+                printf '合并上游 %s 时下面这些文件有冲突，po0 分支没有改动：\n\n```\n%s\n```\n\n解决后推送 po0，再手动运行一次 po0 sync upstream。\n' \
+                  "$tag" "$conflicts" > body.md
+                gh issue create --title "$title" --body-file body.md
+              fi
+              echo "::error::Merging $tag conflicts in: $conflicts"
+              exit 1
+            fi
+            git push origin HEAD:po0
+          fi
+          # A rebuild replaces the release, so its tag names the commit built.
+          if [[ "$released" != 0 ]]; then
+            gh release delete "$tag" --cleanup-tag --yes ||
+              git push --delete origin "refs/tags/$tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: merge
+    if: needs.merge.outputs.tag != ''
+    uses: ./.github/workflows/po0-android.yaml
+    with:
+      tag: ${{ needs.merge.outputs.tag }}
+      ref: ${{ needs.merge.outputs.ref }}
+    secrets: inherit

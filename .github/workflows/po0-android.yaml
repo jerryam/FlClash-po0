@@ -1,0 +1,208 @@
+# Builds the po0 Android APKs. A push to po0 builds an arm64 test APK; a run
+# with a tag builds every ABI and publishes the release the app updates from.
+name: po0 android
+
+on:
+  push:
+    branches:
+      - po0
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, vX.Y.Z (empty: test build, no release)'
+        required: false
+        default: ''
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      ref:
+        type: string
+        required: true
+
+concurrency:
+  group: po0-android-${{ inputs.tag || github.ref }}
+  cancel-in-progress: ${{ !inputs.tag }}
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Check the tag
+        if: env.TAG != ''
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$TAG is not vX.Y.Z"
+            exit 1
+          fi
+
+      # The upstream release job pins these; reading them keeps a merged
+      # upstream release building with the toolchain it was released with.
+      - name: Read the upstream toolchain
+        run: |
+          upstream=.github/workflows/build.yaml
+          for key in FLUTTER_VERSION GO_VERSION NDK_VERSION; do
+            echo "$key=$(yq ".env.$key" "$upstream")" >> "$GITHUB_ENV"
+          done
+          ca='.jobs.build.steps[] | select(.name == "Fetch CA certificates") | .env'
+          echo "CA_BUNDLE=$(yq "$ca.CA_BUNDLE" "$upstream")" >> "$GITHUB_ENV"
+          echo "CA_BUNDLE_SHA256=$(yq "$ca.CA_BUNDLE_SHA256" "$upstream")" >> "$GITHUB_ENV"
+
+      - name: Apply the version
+        run: |
+          name="$(sed -n 's/^version: \([0-9.]*\).*$/\1/p' pubspec.yaml)"
+          if [[ -n "$TAG" ]]; then
+            name="${TAG#v}"
+          fi
+          committed="$(sed -n 's/^version: .*+\([0-9]*\)$/\1/p' pubspec.yaml)"
+          build="$(date -u +%Y%m%d%H)"
+          if ((build <= ${committed:-0})); then
+            build=$((committed + 1))
+          fi
+          sed -i "s/^version: .*/version: $name+$build/" pubspec.yaml
+          echo "Building $name+$build"
+
+      # Applied at build time, so the branch keeps upstream's lines and merges
+      # cleanly; a line upstream changed fails here instead of being skipped.
+      - name: Apply the po0 identity
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          replace() {
+            grep -qF -- "$2" "$1" || {
+              echo "::error file=$1::'$2' is gone; update this step"
+              exit 1
+            }
+            FROM="$2" TO="$3" perl -0pi -e 's/\Q$ENV{FROM}\E/$ENV{TO}/g' "$1"
+          }
+          replace android/app/build.gradle.kts \
+            'applicationId = "com.follow.clash"' \
+            'applicationId = "com.follow.clash.po0"'
+          replace android/common/src/main/res/values/strings.xml \
+            '<string name="app_name">FlClash</string>' \
+            '<string name="app_name">FlClash po0</string>'
+          replace lib/common/constant.dart \
+            "const repository = 'chen08209/FlClash';" \
+            "const repository = '$REPOSITORY';"
+
+      - name: Setup Android signing
+        env:
+          KEYSTORE: ${{ secrets.KEYSTORE }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [[ -z "$KEYSTORE" ]]; then
+            if [[ -n "$TAG" ]]; then
+              echo "::error::A release needs the KEYSTORE, KEY_ALIAS, STORE_PASSWORD and KEY_PASSWORD secrets"
+              exit 1
+            fi
+            echo "::warning::No KEYSTORE secret: this test APK is debug-signed (.dev) and cannot update a release install"
+            exit 0
+          fi
+          echo "$KEYSTORE" | base64 --decode > android/app/keystore.jks
+          {
+            echo "keyAlias=$KEY_ALIAS"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyPassword=$KEY_PASSWORD"
+          } >> android/local.properties
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: core/go.sum
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+          link-to-sdk: true
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Format po0
+        run: dart format lib/po0
+
+      - name: Analyze po0
+        run: >-
+          flutter analyze --no-fatal-infos
+          lib/po0 lib/main.dart lib/views/tools.dart lib/providers/action.dart
+
+      - name: Fetch CA certificates
+        run: |
+          bundle=core/Clash.Meta/component/ca/ca-certificates.crt
+          curl -fsSL --retry 3 -o "$bundle" "https://curl.se/ca/$CA_BUNDLE"
+          echo "$CA_BUNDLE_SHA256  $bundle" | sha256sum -c -
+
+      - name: Build
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          if [[ -n "$TAG" ]]; then
+            dart tool/package.dart android --env stable --tag "$TAG" -v
+          else
+            dart tool/package.dart android --arch arm64 -v
+          fi
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: po0-android
+          path: ./dist
+          overwrite: true
+
+      - name: Merge the release files
+        if: env.TAG != ''
+        run: |
+          yq -i '.hooks.user_defines.setup.build_assets = false | .hooks.user_defines.rust_api.build_assets = false' pubspec.yaml
+          dart run tool/package.dart merge dist --out release
+
+      - name: Release
+        if: env.TAG != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ inputs.ref || github.sha }}
+          name: FlClash po0 ${{ env.TAG }}
+          body: |
+            FlClash ${{ env.TAG }}，加上 po0 自动加白（工具 → po0 加白）。
+
+            绝大多数手机装 `arm64` 的 APK。包名是 `com.follow.clash.po0`，可以和官方 FlClash 同时安装。
+          files: ./release/*
+          make_latest: 'true'
