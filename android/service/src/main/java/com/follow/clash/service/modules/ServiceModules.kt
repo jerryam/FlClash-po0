@@ -24,6 +24,7 @@ internal class ServiceModules(private val service: Service) {
         val nextModules = listOf(
             NotificationModule(service, nextScope),
             MemoryPressureModule(service, nextScope),
+            Po0Module(service),
         )
         val startedModules = mutableListOf<ServiceModule>()
 

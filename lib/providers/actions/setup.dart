@@ -555,7 +555,6 @@ class SetupAction extends _$SetupAction {
     if (hasScript) {
       rawConfig = await handleEvaluate(scriptContent!, rawConfig);
     }
-    rawConfig = po0Firewall.patchRawConfig(rawConfig);
     final directory = await appPath.profilesPath;
     final hasCustomExit =
         setupState.addedRules.any((rule) => rule.customExit) ||

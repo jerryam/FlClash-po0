@@ -3,7 +3,7 @@ package com.follow.clash
 import com.follow.clash.plugins.AppPlugin
 import com.follow.clash.plugins.BatteryPlugin
 import com.follow.clash.plugins.LinkPlugin
-import com.follow.clash.plugins.Po0ScreenPlugin
+import com.follow.clash.plugins.Po0Plugin
 import com.follow.clash.plugins.ServicePlugin
 import com.follow.clash.plugins.TilePlugin
 import com.follow.clash.plugins.WifiSsidPlugin
@@ -19,7 +19,7 @@ class MainActivity : FlutterActivity() {
         flutterEngine.plugins.add(ServicePlugin())
         flutterEngine.plugins.add(TilePlugin())
         flutterEngine.plugins.add(WifiSsidPlugin())
-        flutterEngine.plugins.add(Po0ScreenPlugin())
+        flutterEngine.plugins.add(Po0Plugin())
         ServiceState.attachFlutterEngine(flutterEngine)
     }
 

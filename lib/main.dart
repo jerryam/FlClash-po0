@@ -36,7 +36,6 @@ void main() {
       try {
         await RustLib.init();
         final version = await system.init();
-        await po0Firewall.load();
         final container = await bootstrap.init(version);
         await FlClashHttpOverrides.trustCoreRoots();
         HttpOverrides.global = FlClashHttpOverrides(container);

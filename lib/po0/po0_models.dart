@@ -1,15 +1,4 @@
-import 'dart:math';
-
-/// The po0 firewall API answers on this address only, and whitelists the /24
-/// of whatever address the request arrives from.
-const po0ApiHost = '124.221.69.228';
-
 const po0TokenPrefix = 'pgnfw_';
-
-/// The listener the core runs for po0 requests only; its `proxy: DIRECT`
-/// wins over the mode, rules and TUN, so a request through it always leaves
-/// on the physical network.
-const po0ListenerName = 'po0-direct';
 
 const po0MinInterval = 1;
 const po0MaxInterval = 3600;
@@ -33,28 +22,32 @@ String maskPo0Token(String token) =>
 int clampPo0Interval(int value) =>
     value.clamp(po0MinInterval, po0MaxInterval).toInt();
 
-String generatePo0Secret(int length) {
-  const chars =
-      'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  final random = Random.secure();
-  return List.generate(
-    length,
-    (_) => chars[random.nextInt(chars.length)],
-  ).join();
-}
-
 class Po0TokenEntry {
-  const Po0TokenEntry({required this.token, this.name = ''});
+  const Po0TokenEntry({
+    required this.token,
+    this.name = '',
+    this.enabled = true,
+  });
 
   final String token;
   final String name;
 
+  /// Off skips this token and keeps it in the list.
+  final bool enabled;
+
   String get label => name.isNotEmpty ? name : maskPo0Token(token);
 
-  Po0TokenEntry copyWith({String? token, String? name}) =>
-      Po0TokenEntry(token: token ?? this.token, name: name ?? this.name);
+  Po0TokenEntry copyWith({String? name, bool? enabled}) => Po0TokenEntry(
+    token: token,
+    name: name ?? this.name,
+    enabled: enabled ?? this.enabled,
+  );
 
-  Map<String, Object?> toJson() => {'token': token, 'name': name};
+  Map<String, Object?> toJson() => {
+    'token': token,
+    'name': name,
+    'enabled': enabled,
+  };
 
   static Po0TokenEntry? fromJson(Object? json) {
     if (json is! Map) {
@@ -65,15 +58,42 @@ class Po0TokenEntry {
       return null;
     }
     final name = json['name'];
-    return Po0TokenEntry(token: token, name: name is String ? name : '');
+    return Po0TokenEntry(
+      token: token,
+      name: name is String ? name : '',
+      enabled: json['enabled'] != false,
+    );
   }
 
   @override
   bool operator ==(Object other) =>
-      other is Po0TokenEntry && other.token == token && other.name == name;
+      other is Po0TokenEntry &&
+      other.token == token &&
+      other.name == name &&
+      other.enabled == enabled;
 
   @override
-  int get hashCode => Object.hash(token, name);
+  int get hashCode => Object.hash(token, name, enabled);
+}
+
+/// One token per line, its note after it, as [parsePo0TokenLines] reads.
+String formatPo0TokenLines(List<Po0TokenEntry> entries) => [
+  for (final entry in entries)
+    entry.name.isEmpty ? entry.token : '${entry.token} ${entry.name}',
+].join('\n');
+
+/// The tokens in pasted text, each with the rest of its line as its note.
+List<Po0TokenEntry> parsePo0TokenLines(String text) {
+  final seen = <String>{};
+  return [
+    for (final line in text.split(RegExp(r'\r?\n')))
+      if (_po0TokenInText.firstMatch(line) case final match?
+          when seen.add(match.group(0)!))
+        Po0TokenEntry(
+          token: match.group(0)!,
+          name: line.replaceRange(match.start, match.end, ' ').trim(),
+        ),
+  ];
 }
 
 class Po0Settings {
@@ -81,58 +101,39 @@ class Po0Settings {
     this.enabled = true,
     this.tokens = const [],
     this.interval = po0DefaultInterval,
-    this.port = 0,
-    this.username = '',
-    this.password = '',
   });
 
-  /// The master switch: off sends nothing and keeps the listener out of the
-  /// config.
+  /// The master switch: off sends nothing.
   final bool enabled;
   final List<Po0TokenEntry> tokens;
 
   /// Seconds between two checks, [po0MinInterval] to [po0MaxInterval].
   final int interval;
 
-  /// The DIRECT listener's port and credentials. They are kept across
-  /// restarts because the Android service can run the last applied config
-  /// before the app starts again.
-  final int port;
-  final String username;
-  final String password;
-
-  bool get hasListener =>
-      port > 0 && username.isNotEmpty && password.isNotEmpty;
+  List<Po0TokenEntry> get activeTokens => enabled
+      ? [
+          for (final entry in tokens)
+            if (entry.enabled) entry,
+        ]
+      : const [];
 
   /// Whether there is anything to whitelist.
-  bool get isActive => enabled && tokens.isNotEmpty;
-
-  /// Whether the config the core runs needs the DIRECT listener.
-  bool get wantsListener => isActive && hasListener;
+  bool get isActive => activeTokens.isNotEmpty;
 
   Po0Settings copyWith({
     bool? enabled,
     List<Po0TokenEntry>? tokens,
     int? interval,
-    int? port,
-    String? username,
-    String? password,
   }) => Po0Settings(
     enabled: enabled ?? this.enabled,
     tokens: tokens ?? this.tokens,
     interval: interval ?? this.interval,
-    port: port ?? this.port,
-    username: username ?? this.username,
-    password: password ?? this.password,
   );
 
   Map<String, Object?> toJson() => {
     'enabled': enabled,
     'tokens': [for (final entry in tokens) entry.toJson()],
     'interval': interval,
-    'port': port,
-    'username': username,
-    'password': password,
   };
 
   static Po0Settings fromJson(Object? json) {
@@ -149,18 +150,12 @@ class Po0Settings {
             entry,
     ];
     final interval = json['interval'];
-    final port = json['port'];
-    final username = json['username'];
-    final password = json['password'];
     return Po0Settings(
       enabled: json['enabled'] != false,
       tokens: tokens,
       interval: interval is num
           ? clampPo0Interval(interval.toInt())
           : po0DefaultInterval,
-      port: port is num && port > 0 && port < 65536 ? port.toInt() : 0,
-      username: username is String ? username : '',
-      password: password is String ? password : '',
     );
   }
 }
@@ -199,14 +194,37 @@ class Po0Result {
   final int? limit;
   final String? message;
 
-  Po0Result copyWith({Po0ResultType? type, String? message}) => Po0Result(
-    type: type ?? this.type,
-    time: time,
-    currentIp: currentIp,
-    whitelist: whitelist,
-    limit: limit,
-    message: message ?? this.message,
-  );
+  /// Slots left on the whitelist, when the server says how many it has.
+  int? get freeSlots {
+    final limit = this.limit;
+    return limit == null
+        ? null
+        : (limit - whitelist.length).clamp(0, limit).toInt();
+  }
+
+  /// No slot is left for an exit that is not listed yet.
+  bool get isFull => type != Po0ResultType.applied && freeSlots == 0;
+
+  static Po0Result? fromJson(Object? json) {
+    if (json is! Map) {
+      return null;
+    }
+    final type = Po0ResultType.values.asNameMap()[json['type']];
+    final time = json['time'];
+    if (type == null || time is! num) {
+      return null;
+    }
+    final whitelist = json['whitelist'];
+    final limit = json['limit'];
+    return Po0Result(
+      type: type,
+      time: DateTime.fromMillisecondsSinceEpoch(time.toInt()),
+      currentIp: json['currentIp'] as String?,
+      whitelist: whitelist is List ? [for (final ip in whitelist) '$ip'] : [],
+      limit: limit is num ? limit.toInt() : null,
+      message: json['message'] as String?,
+    );
+  }
 }
 
 class Po0Status {
@@ -219,15 +237,25 @@ class Po0Status {
   /// A manual run is in progress.
   final bool busy;
 
-  Po0Status copyWith({
-    Map<String, Po0Result>? results,
-    DateTime? lastRound,
-    bool? busy,
-  }) => Po0Status(
-    results: results ?? this.results,
-    lastRound: lastRound ?? this.lastRound,
-    busy: busy ?? this.busy,
-  );
+  static Po0Status fromJson(Object? json) {
+    if (json is! Map) {
+      return const Po0Status();
+    }
+    final results = json['results'];
+    final lastRound = json['lastRound'];
+    return Po0Status(
+      results: {
+        if (results is Map)
+          for (final MapEntry(:key, :value) in results.entries)
+            if (key is String)
+              if (Po0Result.fromJson(value) case final result?) key: result,
+      },
+      lastRound: lastRound is num
+          ? DateTime.fromMillisecondsSinceEpoch(lastRound.toInt())
+          : null,
+      busy: json['busy'] == true,
+    );
+  }
 }
 
 /// The server whitelists whole /24s and lists entries as IPs or `x.x.x.0/24`.
@@ -254,4 +282,24 @@ String po0C24Of(String ip) {
     return ip;
   }
   return '${parts[0]}.${parts[1]}.${parts[2]}.0/24';
+}
+
+/// One line for a token's latest result.
+String po0ResultText(Po0Result result) {
+  final exit = result.currentIp == null || result.currentIp!.isEmpty
+      ? ''
+      : '（出口 ${po0C24Of(result.currentIp!)}）';
+  final text = switch (result.type) {
+    Po0ResultType.applied => '已加白$exit',
+    Po0ResultType.notApplied => '未加白$exit',
+    Po0ResultType.disabled => 'po0 端防火墙未开启',
+    Po0ResultType.rejected => '被拒绝：${result.message ?? ''}',
+    Po0ResultType.error => '失败：${result.message ?? ''}',
+  };
+  return switch (result.freeSlots) {
+    0 when result.type == Po0ResultType.applied => '$text · 名额已用完',
+    0 => '$text · 名额已满',
+    1 => '$text · 只剩 1 个名额',
+    _ => text,
+  };
 }

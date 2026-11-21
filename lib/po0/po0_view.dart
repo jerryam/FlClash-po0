@@ -16,19 +16,23 @@ String _summaryOf(Po0Settings settings, Po0Status status) {
   if (!settings.enabled) {
     return '自动加白已关闭';
   }
-  final results = [
-    for (final entry in settings.tokens) status.results[entry.token],
-  ];
+  final active = settings.activeTokens;
+  if (active.isEmpty) {
+    return '所有 token 都已停用';
+  }
+  final results = [for (final entry in active) status.results[entry.token]];
   if (results.every((result) => result == null)) {
     return '等待检查';
   }
   final applied = results
       .where((result) => result?.type == Po0ResultType.applied)
       .length;
-  if (applied == results.length) {
-    return '已加白';
-  }
-  return '$applied/${results.length} 已加白';
+  final summary = applied == results.length
+      ? '已加白'
+      : '$applied/${results.length} 已加白';
+  return results.any((result) => result?.isFull ?? false)
+      ? '$summary · 有 token 名额已满'
+      : summary;
 }
 
 String _twoDigits(int value) => value.toString().padLeft(2, '0');
@@ -39,7 +43,7 @@ String _timeOf(DateTime time) =>
 
 String _detailOf(Po0Settings settings, Po0Status status) {
   final exits = <String>{
-    for (final entry in settings.tokens)
+    for (final entry in settings.activeTokens)
       if (status.results[entry.token]?.currentIp case final ip?
           when ip.isNotEmpty)
         po0C24Of(ip),
@@ -53,7 +57,11 @@ String _detailOf(Po0Settings settings, Po0Status status) {
 }
 
 String _tokenLine(Po0TokenEntry entry, Po0Result? result) {
-  final state = result == null ? '等待检查' : po0ResultText(result);
+  final state = !entry.enabled
+      ? '已停用'
+      : result == null
+      ? '等待检查'
+      : po0ResultText(result);
   return entry.name.isEmpty ? state : '${maskPo0Token(entry.token)} · $state';
 }
 
@@ -97,21 +105,43 @@ Future<String?> _showNameDialog(String name) async {
   return value?.trim();
 }
 
+Future<void> _addTokens(List<Po0TokenEntry> added) {
+  return po0Firewall.update((settings) {
+    final known = {for (final entry in settings.tokens) entry.token};
+    return settings.copyWith(
+      tokens: [
+        ...settings.tokens,
+        for (final entry in added)
+          if (known.add(entry.token)) entry,
+      ],
+    );
+  });
+}
+
+Future<void> _replaceToken(
+  String token,
+  Po0TokenEntry? Function(Po0TokenEntry) change,
+) {
+  return po0Firewall.update(
+    (settings) => settings.copyWith(
+      tokens: [
+        for (final entry in settings.tokens)
+          if (entry.token != token)
+            entry
+          else if (change(entry) case final changed?)
+            changed,
+      ],
+    ),
+  );
+}
+
 Future<void> _addToken(List<Po0TokenEntry> entries) async {
   final token = await _showTokenDialog(entries);
   if (token == null) {
     return;
   }
   final name = await _showNameDialog('');
-  await po0Firewall.update(
-    (settings) => settings.copyWith(
-      tokens: [
-        for (final entry in settings.tokens)
-          if (entry.token != token) entry,
-        Po0TokenEntry(token: token, name: name ?? ''),
-      ],
-    ),
-  );
+  await _addTokens([Po0TokenEntry(token: token, name: name ?? '')]);
 }
 
 Future<void> _rename(Po0TokenEntry entry) async {
@@ -119,14 +149,7 @@ Future<void> _rename(Po0TokenEntry entry) async {
   if (name == null || name == entry.name) {
     return;
   }
-  await po0Firewall.update(
-    (settings) => settings.copyWith(
-      tokens: [
-        for (final item in settings.tokens)
-          item.token == entry.token ? item.copyWith(name: name) : item,
-      ],
-    ),
-  );
+  await _replaceToken(entry.token, (item) => item.copyWith(name: name));
 }
 
 Future<void> _delete(Po0TokenEntry entry) async {
@@ -139,12 +162,39 @@ Future<void> _delete(Po0TokenEntry entry) async {
   if (confirmed != true) {
     return;
   }
-  await po0Firewall.update(
-    (settings) => settings.copyWith(
-      tokens: [
-        for (final item in settings.tokens)
-          if (item.token != entry.token) item,
-      ],
+  await _replaceToken(entry.token, (_) => null);
+}
+
+Future<void> _importTokens(List<Po0TokenEntry> entries) async {
+  final data = await Clipboard.getData(Clipboard.kTextPlain);
+  final found = parsePo0TokenLines(data?.text ?? '');
+  final known = {for (final entry in entries) entry.token};
+  final added = [
+    for (final entry in found)
+      if (!known.contains(entry.token)) entry,
+  ];
+  if (added.isNotEmpty) {
+    await _addTokens(added);
+  }
+  await dialogs.showAlert(
+    title: '从剪贴板导入',
+    message: TextSpan(
+      text: found.isEmpty
+          ? '剪贴板里没有 pgnfw_ 开头的 token。'
+          : '导入了 ${added.length} 个 token'
+                '${found.length > added.length ? '，${found.length - added.length} 个已经有了' : ''}。',
+    ),
+  );
+}
+
+Future<void> _exportTokens(List<Po0TokenEntry> entries) async {
+  await Clipboard.setData(ClipboardData(text: formatPo0TokenLines(entries)));
+  await dialogs.showAlert(
+    title: '复制全部 token',
+    message: TextSpan(
+      text:
+          '已复制 ${entries.length} 个 token 和备注。'
+          '找个安全的地方保存，换机或重装后用「从剪贴板导入」恢复。',
     ),
   );
 }
@@ -236,8 +286,8 @@ class Po0View extends ConsumerWidget {
       ],
       footer:
           '检查只读白名单，不占用名额；当前出口不在名单里时才写入。'
-          '应用在前台或后台运行且亮屏时检查，熄屏暂停；'
-          '从最近任务里划掉应用后停止检查。',
+          '代理运行时由后台服务检查，从最近任务里划掉应用也不停；'
+          '亮屏时按间隔检查，熄屏后只在网络切换时检查。',
     );
   }
 
@@ -249,10 +299,25 @@ class Po0View extends ConsumerWidget {
           ListItem(
             title: Text(entry.label),
             subtitle: Text(_tokenLine(entry, status.results[entry.token])),
-            trailing: IconButton(
-              tooltip: '删除',
-              onPressed: () => unawaited(_delete(entry)),
-              icon: const GlyphIcon(AppGlyphs.delete),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Switch(
+                  value: entry.enabled,
+                  semanticLabel: '为「${entry.label}」自动加白',
+                  onChanged: (value) => unawaited(
+                    _replaceToken(
+                      entry.token,
+                      (item) => item.copyWith(enabled: value),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '删除',
+                  onPressed: () => unawaited(_delete(entry)),
+                  icon: const GlyphIcon(AppGlyphs.delete),
+                ),
+              ],
             ),
             onTap: () => unawaited(_rename(entry)),
           ),
@@ -261,14 +326,29 @@ class Po0View extends ConsumerWidget {
           title: const Text('添加 token'),
           onTap: () => unawaited(_addToken(settings.tokens)),
         ),
+        ListItem(
+          leading: const GlyphIcon(AppGlyphs.paste),
+          title: const Text('从剪贴板导入'),
+          subtitle: const Text('每行一个 token，后面可以跟备注'),
+          onTap: () => unawaited(_importTokens(settings.tokens)),
+        ),
+        ListItem(
+          leading: const GlyphIcon(AppGlyphs.copy),
+          title: const Text('复制全部 token'),
+          onTap: settings.tokens.isEmpty
+              ? null
+              : () => unawaited(_exportTokens(settings.tokens)),
+        ),
       ],
-      footer: '点按 token 修改备注。token 只保存在这台设备上。',
+      footer:
+          '点按 token 修改备注，开关可以暂停单个 token。'
+          'token 只保存在这台设备上，FlClash 的备份不包含它们，请用「复制全部 token」另存。',
     );
   }
 
   List<Widget> _whitelistSections(Po0Settings settings, Po0Status status) {
     return [
-      for (final entry in settings.tokens)
+      for (final entry in settings.activeTokens)
         if (status.results[entry.token] case final result?
             when result.whitelist.isNotEmpty)
           generateSection(
