@@ -27,7 +27,7 @@ jobs:
       ref: ${{ steps.merge.outputs.ref }}
     steps:
       - name: Checkout po0
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: po0
           fetch-depth: 0
