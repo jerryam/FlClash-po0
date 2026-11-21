@@ -157,7 +157,10 @@ jobs:
         run: flutter pub get
 
       - name: Format po0
-        run: dart format lib/po0
+        run: |
+          dart format lib/po0
+          git --no-pager diff --exit-code lib/po0 ||
+            echo "::warning::lib/po0 is not dart-formatted; the diff above shows how"
 
       - name: Analyze po0
         run: >-
