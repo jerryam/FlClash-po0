@@ -51,17 +51,11 @@ po0 按请求的来源 IP 加白，所以请求必须从手机的真实网络发
 
 ### 签名
 
-Release 必须用固定的签名，否则无法覆盖安装。仓库需要这 4 个 Actions secrets：
+所有构建（Release 和推送 `po0` 的测试构建）都用仓库里的 `.github/po0/release.p12` 签名
+（别名 `po0`，密码 `flclash-po0`），所以新版本都能直接覆盖安装。不要替换这个文件：换了密钥就得卸载重装。
 
-| Secret | 内容 |
-|---|---|
-| `KEYSTORE` | keystore 文件的 base64 |
-| `KEY_ALIAS` | 密钥别名 |
-| `STORE_PASSWORD` | keystore 密码 |
-| `KEY_PASSWORD` | 密钥密码（PKCS12 与 `STORE_PASSWORD` 相同） |
-
-keystore 和密码不要提交进仓库，并另外备份好：丢了之后新版本就没法覆盖安装旧版本了。
-推送到 `po0` 的测试构建没有这些 secret 也能跑，只是用临时的调试签名，包名带 `.dev`。
+仓库是公开的，所以这个密钥也是公开的：别人也能做出能覆盖安装这个应用的 APK。
+只从本仓库的 Release（或应用内更新）安装就没有问题，不要装别处来的 `com.follow.clash.po0` 安装包。
 
 ## 上游的工作流
 

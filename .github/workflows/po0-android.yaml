@@ -101,26 +101,15 @@ jobs:
             "const repository = 'chen08209/FlClash';" \
             "const repository = '$REPOSITORY';"
 
+      # The release key is committed and public (see PO0.md), so every build,
+      # test builds included, can update an installed release.
       - name: Setup Android signing
-        env:
-          KEYSTORE: ${{ secrets.KEYSTORE }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [[ -z "$KEYSTORE" ]]; then
-            if [[ -n "$TAG" ]]; then
-              echo "::error::A release needs the KEYSTORE, KEY_ALIAS, STORE_PASSWORD and KEY_PASSWORD secrets"
-              exit 1
-            fi
-            echo "::warning::No KEYSTORE secret: this test APK is debug-signed (.dev) and cannot update a release install"
-            exit 0
-          fi
-          echo "$KEYSTORE" | base64 --decode > android/app/keystore.jks
+          cp .github/po0/release.p12 android/app/keystore.jks
           {
-            echo "keyAlias=$KEY_ALIAS"
-            echo "storePassword=$STORE_PASSWORD"
-            echo "keyPassword=$KEY_PASSWORD"
+            echo 'keyAlias=po0'
+            echo 'storePassword=flclash-po0'
+            echo 'keyPassword=flclash-po0'
           } >> android/local.properties
 
       - name: Setup Go
