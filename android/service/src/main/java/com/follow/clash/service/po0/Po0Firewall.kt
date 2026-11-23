@@ -43,7 +43,6 @@ object Po0Firewall {
     private const val SETTINGS_KEY = "settings"
     private const val NETWORK_DELAY_MS = 1_000L
     private const val SERVICE_DELAY_MS = 2_000L
-    private const val SCREEN_OFF_RETRIES = 5
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val wake = Channel<Unit>(Channel.CONFLATED)
@@ -63,14 +62,7 @@ object Po0Firewall {
     private var settings = Po0Settings()
     private val services = LinkedHashSet<Service>()
     private var uiCount = 0
-    private var screenOn = true
-    private var dueAt: Long? = null
-    private var failures = 0
-    private var pendingNetwork = false
-    private var screenOffRetries = 0
-    private var networkGeneration = 0
-    private var roundGeneration = 0
-    private var manualPending = false
+    private val schedule = Po0Schedule()
     private val networkStates = mutableMapOf<Network, NetworkState>()
 
     private data class NetworkState(val validated: Boolean = false, val addresses: List<String> = emptyList())
@@ -89,7 +81,7 @@ object Po0Firewall {
         val next = Po0Settings.fromJson(json)
         synchronized(lock) {
             settings = next
-            failures = 0
+            schedule.settingsChanged()
             val tokens = next.tokens.map { it.token }.toSet()
             status.update { it.copy(results = it.results.filterKeys(tokens::contains)) }
         }
@@ -120,8 +112,7 @@ object Po0Firewall {
     fun runNow() {
         synchronized(lock) {
             if (!shouldRun) return
-            failures = 0
-            manualPending = true
+            schedule.manual()
             status.update { it.copy(busy = true) }
         }
         kick()
@@ -145,12 +136,10 @@ object Po0Firewall {
     private fun kick(delayMs: Long, debounce: Boolean = false) {
         synchronized(lock) {
             if (!shouldRun) {
-                dueAt = null
+                schedule.cancel()
                 return
             }
-            val at = now() + delayMs
-            val current = dueAt
-            dueAt = if (debounce || current == null) at else minOf(current, at)
+            schedule.kick(now(), delayMs, debounce)
         }
         wake.trySend(Unit)
     }
@@ -164,7 +153,7 @@ object Po0Firewall {
             settings = Po0Settings.fromJson(
                 context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getString(SETTINGS_KEY, null),
             )
-            screenOn = context.getSystemService<PowerManager>()?.isInteractive ?: true
+            schedule.screen(context.getSystemService<PowerManager>()?.isInteractive ?: true)
         }
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
@@ -186,14 +175,7 @@ object Po0Firewall {
     }
 
     private fun onScreen(on: Boolean) {
-        synchronized(lock) {
-            if (screenOn == on) return
-            screenOn = on
-            if (!on) {
-                if (!pendingNetwork) dueAt = null
-                return
-            }
-        }
+        if (!synchronized(lock) { schedule.screen(on) }) return
         client.reset()
         kick()
     }
@@ -233,12 +215,7 @@ object Po0Firewall {
 
     private fun onNetworkChanged() {
         client.reset()
-        synchronized(lock) {
-            failures = 0
-            pendingNetwork = true
-            screenOffRetries = 0
-            networkGeneration++
-        }
+        synchronized(lock) { schedule.networkChanged() }
         kick(NETWORK_DELAY_MS, debounce = true)
     }
 
@@ -257,7 +234,7 @@ object Po0Firewall {
 
     private suspend fun loop() {
         while (true) {
-            val wait = synchronized(lock) { dueAt?.let { (it - now()).coerceAtLeast(0) } }
+            val wait = synchronized(lock) { schedule.dueAt?.let { (it - now()).coerceAtLeast(0) } }
             when {
                 wait == null -> wake.receive()
                 wait > 0 -> withTimeoutOrNull(wait) { wake.receive() }
@@ -265,7 +242,7 @@ object Po0Firewall {
                     round()
                 } catch (error: Exception) {
                     log("检查出错：$error", warning = true)
-                    finish(failed = true)
+                    finish(failed = true, listedExits = null)
                 }
             }
         }
@@ -273,26 +250,27 @@ object Po0Firewall {
 
     private suspend fun round() {
         val tokens = synchronized(lock) {
-            dueAt = null
-            manualPending = false
-            roundGeneration = networkGeneration
+            schedule.startRound()
             if (!shouldRun) {
                 status.update { it.copy(busy = false) }
                 return
             }
             settings.activeTokens
         }
-        var failed = false
-        for (entry in tokens) {
+        val results = tokens.map { entry ->
             val result = try {
                 whitelist(entry)
             } catch (error: Po0RouteUnavailable) {
                 Po0Result(Po0ResultType.ERROR, System.currentTimeMillis(), message = error.message)
             }
-            failed = failed || result.type == Po0ResultType.ERROR
             put(entry, result)
+            result
         }
-        finish(failed)
+        val listedExits = results
+            .takeIf { list -> list.all { it.type == Po0ResultType.APPLIED } }
+            ?.map { po0C24Of(it.currentIp.orEmpty()) }
+            ?.toSet()
+        finish(results.any { it.type == Po0ResultType.ERROR }, listedExits)
     }
 
     private suspend fun whitelist(entry: Po0Token): Po0Result {
@@ -319,34 +297,17 @@ object Po0Firewall {
         }
     }
 
-    private fun finish(failed: Boolean) {
-        synchronized(lock) { finishLocked(failed) }
-    }
-
-    private fun finishLocked(failed: Boolean) {
-        failures = if (failed) failures + 1 else 0
-        val roundSawCurrentNetwork = roundGeneration == networkGeneration
-        if (!failed && roundSawCurrentNetwork) {
-            pendingNetwork = false
-            screenOffRetries = 0
-        }
-        val tokens = settings.tokens.map { it.token }.toSet()
-        status.update {
-            it.copy(
-                results = it.results.filterKeys(tokens::contains),
-                lastRound = System.currentTimeMillis(),
-                busy = manualPending,
-            )
-        }
-        if (dueAt != null || !shouldRun) return
-        val delay = po0NextDelayMs(settings.interval, failures)
-        dueAt = when {
-            screenOn -> now() + delay
-            failed && pendingNetwork && screenOffRetries < SCREEN_OFF_RETRIES -> {
-                screenOffRetries++
-                now() + delay
+    private fun finish(failed: Boolean, listedExits: Set<String>?) {
+        synchronized(lock) {
+            schedule.finishRound(now(), failed, listedExits, settings, shouldRun)
+            val tokens = settings.tokens.map { it.token }.toSet()
+            status.update {
+                it.copy(
+                    results = it.results.filterKeys(tokens::contains),
+                    lastRound = System.currentTimeMillis(),
+                    busy = schedule.manualPending,
+                )
             }
-            else -> null
         }
     }
 

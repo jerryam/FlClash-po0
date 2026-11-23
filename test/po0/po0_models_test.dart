@@ -49,6 +49,7 @@ void main() {
       const settings = Po0Settings(
         enabled: false,
         interval: 30,
+        adaptive: false,
         tokens: [
           Po0TokenEntry(token: _token, name: '东京'),
           Po0TokenEntry(token: _other, enabled: false),
@@ -57,6 +58,7 @@ void main() {
       final decoded = Po0Settings.fromJson(settings.toJson());
       expect(decoded.enabled, isFalse);
       expect(decoded.interval, 30);
+      expect(decoded.adaptive, isFalse);
       expect(decoded.tokens, settings.tokens);
     });
 
@@ -87,6 +89,7 @@ void main() {
         ],
       });
       expect(settings.tokens.single.enabled, isTrue);
+      expect(settings.adaptive, isTrue);
     });
 
     test('activeTokens skips paused tokens and everything when off', () {

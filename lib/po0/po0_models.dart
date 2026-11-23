@@ -133,6 +133,7 @@ class Po0Settings {
     this.enabled = true,
     this.tokens = const [],
     this.interval = po0DefaultInterval,
+    this.adaptive = true,
   });
 
   /// The master switch: off sends nothing.
@@ -141,6 +142,9 @@ class Po0Settings {
 
   /// Seconds between two checks, [po0MinInterval] to [po0MaxInterval].
   final int interval;
+
+  /// Checks slow down to once a minute while the same exits stay listed.
+  final bool adaptive;
 
   List<Po0TokenEntry> get activeTokens => enabled
       ? [
@@ -156,16 +160,19 @@ class Po0Settings {
     bool? enabled,
     List<Po0TokenEntry>? tokens,
     int? interval,
+    bool? adaptive,
   }) => Po0Settings(
     enabled: enabled ?? this.enabled,
     tokens: tokens ?? this.tokens,
     interval: interval ?? this.interval,
+    adaptive: adaptive ?? this.adaptive,
   );
 
   Map<String, Object?> toJson() => {
     'enabled': enabled,
     'tokens': [for (final entry in tokens) entry.toJson()],
     'interval': interval,
+    'adaptive': adaptive,
   };
 
   static Po0Settings fromJson(Object? json) {
@@ -188,6 +195,7 @@ class Po0Settings {
       interval: interval is num
           ? clampPo0Interval(interval.toInt())
           : po0DefaultInterval,
+      adaptive: json['adaptive'] != false,
     );
   }
 }

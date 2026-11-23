@@ -280,6 +280,18 @@ class Po0View extends ConsumerWidget {
             );
           },
         ),
+        ListItem.toggle(
+          title: const Text('稳定时放慢检查'),
+          subtitle: const Text('出口连续几次都已加白时逐步放慢到每分钟一次，网络切换、亮屏或手动加白后恢复'),
+          value: settings.adaptive,
+          onChanged: (value) {
+            unawaited(
+              po0Firewall.update(
+                (current) => current.copyWith(adaptive: value),
+              ),
+            );
+          },
+        ),
       ],
       footer:
           '检查只读白名单，不占用名额；当前出口不在名单里时才写入。'

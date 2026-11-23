@@ -14,6 +14,8 @@ internal const val PO0_MIN_INTERVAL = 1
 internal const val PO0_MAX_INTERVAL = 3600
 internal const val PO0_DEFAULT_INTERVAL = 5
 internal const val PO0_MAX_BACKOFF_MS = 30_000L
+internal const val PO0_RELAXED_MAX_MS = 60_000L
+private const val PO0_STEADY_ROUNDS = 3
 
 private val tokenPattern = Regex("^pgnfw_[^\\s,|;@/?#&]+$")
 
@@ -30,6 +32,7 @@ internal data class Po0Settings(
     val enabled: Boolean = true,
     val tokens: List<Po0Token> = emptyList(),
     val interval: Int = PO0_DEFAULT_INTERVAL,
+    val adaptive: Boolean = true,
 ) {
     val activeTokens: List<Po0Token>
         get() = if (enabled) tokens.filter { it.enabled } else emptyList()
@@ -37,6 +40,7 @@ internal data class Po0Settings(
     fun toJson(): String = JsonObject().apply {
         addProperty("enabled", enabled)
         addProperty("interval", interval)
+        addProperty("adaptive", adaptive)
         add("tokens", JsonArray().apply {
             tokens.forEach { entry ->
                 add(JsonObject().apply {
@@ -68,6 +72,7 @@ internal data class Po0Settings(
                 tokens = tokens,
                 interval = data.number("interval")?.toInt()?.coerceIn(PO0_MIN_INTERVAL, PO0_MAX_INTERVAL)
                     ?: PO0_DEFAULT_INTERVAL,
+                adaptive = data.boolean("adaptive") != false,
             )
         }
     }
@@ -164,6 +169,14 @@ internal fun po0NextDelayMs(intervalSeconds: Int, failures: Int): Long {
     val interval = intervalSeconds * 1000L
     if (failures <= 0 || interval >= PO0_MAX_BACKOFF_MS) return interval
     return (interval shl minOf(failures, 4)).coerceAtMost(PO0_MAX_BACKOFF_MS)
+}
+
+/** From the third round in a row that found the same exits listed, 2/4/8… times the interval, at most a minute. */
+internal fun po0RelaxedDelayMs(intervalSeconds: Int, steadyRounds: Int): Long {
+    val interval = intervalSeconds * 1000L
+    val doublings = steadyRounds - PO0_STEADY_ROUNDS + 1
+    if (doublings <= 0 || interval >= PO0_RELAXED_MAX_MS) return interval
+    return (interval shl minOf(doublings, 6)).coerceAtMost(PO0_RELAXED_MAX_MS)
 }
 
 // The API now and then answers a bare 400 "Error" or a 5xx that succeeds a few

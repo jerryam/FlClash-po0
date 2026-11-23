@@ -132,6 +132,17 @@ class Po0RulesTest {
     }
 
     @Test
+    fun `slows down from the third steady round up to a minute`() {
+        assertEquals(5_000L, po0RelaxedDelayMs(5, 2))
+        assertEquals(10_000L, po0RelaxedDelayMs(5, 3))
+        assertEquals(60_000L, po0RelaxedDelayMs(5, 50))
+        assertEquals(60_000L, po0RelaxedDelayMs(1, 50))
+        assertEquals(120_000L, po0RelaxedDelayMs(120, 50))
+        assertFalse(Po0Settings.fromJson("""{"adaptive":false}""").adaptive)
+        assertTrue(Po0Settings.fromJson("{}").adaptive)
+    }
+
+    @Test
     fun `compares whole slash 24s`() {
         assertTrue(samePo0C24("1.2.3.0/24", "1.2.3.99"))
         assertFalse(samePo0C24("1.2.4.0/24", "1.2.3.99"))
